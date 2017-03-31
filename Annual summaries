@@ -1,0 +1,218 @@
+# Annual Summaries of KRSP Data
+library(krsp)
+library(tidyr)
+library(lubridate)
+library(readr)
+
+# grids to include
+grids <- c("KL", "SU", "AG", "JO")
+
+# connecto to local db
+# note: type conversion warnings in tbl() calls can be ignored
+
+con <- krsp_connect(group="krsp-aws")
+
+# Check that connection worked
+krsp_tables(con)
+# A connection to the AWS should include only [1] "FLastAll"              "behaviour"             "census"                "cones"                 "historic_squirrel_ids"
+#[6] "juvenile"              "litter"                "pedigree"              "squirrel"              "squirrel_alias"       
+# [11] "trapping"  
+# A connection to the localhost instance for AMc should also include the dba tables and the PB table
+
+# use squirrel table just for sex to avoid inconsistencies in trapping records
+squirrel <- tbl(con, "squirrel") %>% 
+  select(squirrel_id = id, sex) %>% 
+  collect(n = Inf)
+
+## trapping
+# pull from db
+trapping <- tbl(con, "trapping") %>% 
+  rename(grid = gr) %>% 
+  # restrict to grids of interest
+  filter(grid %in% grids) %>% 
+  # remove by catch records
+  filter(!is.na(squirrel_id),
+         !(ft %in% c(91, 92, 93, 94)),
+         !is.na(date)) %>% 
+  mutate(year = year(date)) %>% 
+  collect(n = Inf) %>% 
+  mutate(squirrel_id = as.integer(squirrel_id),
+         date = ymd(date))
+# number of captures per year and grid
+num_traps <- trapping %>% 
+  mutate(human_fatalities = (ft %in% c(5, 12))) %>% 
+  group_by(grid, year) %>% 
+  summarize(n_captures = n(),
+            human_fatalities = sum(human_fatalities, na.rm = TRUE),
+            first_trap = min(date, na.rm = TRUE),
+            last_trap = max(date, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(trapping_days =  difftime(last_trap, first_trap , units = "days"))
+# mean/modal number of captures per year, by year, grid, and sex
+capturess_per_year <- trapping %>% 
+  group_by(grid, year, squirrel_id) %>% 
+  summarize(n_captures = n()) %>% 
+  ungroup() %>% 
+  # bring in sex from squirrel table
+  inner_join(squirrel, by = "squirrel_id") %>% 
+  mutate(sex = tolower(sex)) %>% 
+  filter(!is.na(sex)) %>% 
+  group_by(grid, year, sex) %>% 
+  summarize(captures_mean = mean(n_captures, na.rm = TRUE),
+            captures_median = median(n_captures, na.rm = TRUE),
+            captures_n = n()) %>% 
+  # remove sex problems
+  filter(sex %in% c("f", "m")) %>% 
+  # spread male and female across columns
+  gather(metric, captures, starts_with("captures")) %>% 
+  unite(new_var, metric, sex, sep = "_") %>% 
+  spread(new_var, captures) %>% 
+  rename(n_females = captures_n_f, n_males = captures_n_m)
+# combine trapping
+trapping_summ <- num_traps %>% 
+  full_join(capturess_per_year, by = c("grid", "year"))
+
+## behaviour
+# pull data
+behaviour <- tbl(con, "behaviour") %>% 
+  # restrict to KL and SU
+  filter(grid %in% grids) %>% 
+  # feeding obs only
+  filter(!is.na(behaviour),
+         behaviour == 1) %>% 
+  mutate(year = year(date))
+# yearly
+feeding_obs <- behaviour %>% 
+  group_by(grid, year) %>% 
+  summarize(n_feeding = n()) %>% 
+  collect(n = Inf)
+# weekly
+feeding_obs_wk <- behaviour %>% 
+  select(grid, year, date) %>% 
+  collect(n = Inf) %>% 
+  mutate(week = as.integer(week(date)),
+         year = as.integer(year)) %>% 
+  group_by(grid, year, week) %>% 
+  summarize(n_feeding = n())
+
+## litter
+# pull data from db
+litter <- tbl(con, "litter") %>% 
+  # restrict to KL and SU
+  filter(grid %in% grids) %>% 
+  # remove invalid breeding codes
+  filter(!is.na(br), !is.na(yr),
+         br >= 0, br <= 7) %>% 
+  mutate(date = coalesce(fieldBDate, date1, tagDt)) %>% 
+  rename(year = yr) %>% 
+  collect(n = Inf) %>% 
+  mutate(squirrel_id = as.integer(squirrel_id),
+         date = ymd(date))
+# missed and lost litters
+litter <- litter %>% 
+  mutate(missed = (br %in% c(3, 5)),
+         lost = (br %in% c(2, 4, 7)),
+         breeder = (br != 0))
+# identify those that lost and tried again
+litter <- litter %>% 
+  filter(ln > 1) %>% 
+  mutate(retried = TRUE) %>% 
+  distinct(squirrel_id, year, retried) %>% 
+  left_join(litter, ., by = c("squirrel_id", "year")) %>% 
+  mutate(retried = coalesce(retried & lost, FALSE))
+# identify yearlings from flastall
+fla <- tbl(con, "flastall") %>% 
+  filter(gr %in% grids) %>% 
+  select(squirrel_id, BYear) %>% 
+  collect(n = Inf) %>% 
+  mutate(squirrel_id = as.integer(squirrel_id))
+litter <- litter %>% 
+  left_join(fla, by = "squirrel_id") %>% 
+  mutate(yearling = coalesce(year == (BYear + 1), FALSE),
+         yearling_breeder = (yearling & breeder))
+# summarize
+litter_summ <- litter %>% 
+  # julian parturition date
+  mutate(part_date = yday(fieldBDate)) %>% 
+  group_by(grid, year) %>% 
+  summarize(
+    n_breeders = sum(breeder, na.rm = TRUE),
+    n_missed = sum(missed, na.rm = TRUE),
+    n_lost = sum(lost, na.rm = TRUE),
+    n_retried = sum(retried, na.rm = TRUE),
+    n_yearling_breeder = sum(yearling_breeder, na.rm = TRUE),
+    pdate_mean_julian = mean(part_date, na.rm = TRUE)) %>% 
+  mutate(
+    pdate_mean_julian = round(pdate_mean_julian),
+    pdate_mean = (ymd(paste0(year, "-01-01")) + pdate_mean_julian - 1),
+    pct_yearling_breeder = round(n_yearling_breeder / n_breeders, 4)) %>% 
+  filter(n_breeders > 0)
+
+## average litter size and growth rate
+# pull from db
+juvenile <- tbl(con, "juvenile") %>% 
+  select(squirrel_id, litter_id, weight, tagwt = tagWT)
+# litter level information
+litter <- tbl(con, "litter") %>% 
+  # restrict to KL and SU
+  filter(grid %in% grids) %>% 
+  # remove invalid breeding codes
+  filter(!is.na(br), !is.na(yr), !is.na(ln),
+         br >= 0, br <= 7) %>% 
+  select(litter_id = id,
+         year = yr, field_bdate = fieldBDate, n1_date = date1, tag_date = tagDt,
+         mother_id = squirrel_id, grid, ln, food)
+litter <- inner_join(juvenile, litter, by = "litter_id") %>% 
+  collect(n = Inf) %>% 
+  # ids imported as numeric, convert back to integer
+  mutate(mother_id = as.integer(mother_id),
+         squirrel_id = as.integer(squirrel_id),
+         litter_id = as.integer(litter_id)) %>% 
+  # convert dates from character to date class
+  mutate(field_bdate = ymd(field_bdate),
+         n1_date = ymd(n1_date),
+         tag_date = ymd(tag_date))
+# calculate litter size
+lsize <- litter %>% 
+  group_by(grid, year, litter_id) %>% 
+  summarize(litter_size = n()) %>% 
+  group_by(grid, year) %>% 
+  summarize(litter_size = mean(litter_size, na.rm = TRUE)) %>% 
+  ungroup()
+# add aditional fields
+grate <- litter %>% 
+  mutate(
+    # growth rate
+    nest_days = as.numeric(difftime(tag_date, n1_date, units = "days")),
+    growth = (tagwt - weight) / nest_days) %>% 
+  # there are various exlcusions for which growth rate shouldn't be calculated
+  mutate(
+    # n1 weight between 0 and 50 g
+    growth = if_else(is.na(weight) | !between(weight, 0, 50),
+                     NA_real_, growth),
+    # tag weight between 0 and 100 g
+    growth = if_else(is.na(tagwt) | !between(tagwt, 0, 100),
+                     NA_real_, growth),
+    # tag date at least 5 days after n1 date
+    growth = if_else(nest_days < 5, NA_real_, growth),
+    # exclude food manipulation experiments
+    growth = if_else(food %in% c(1, 4, 5, 6, 7, 9, 10, 13),
+                     NA_real_, growth),
+    growth = if_else(is.finite(growth), growth, NA_real_)) %>% 
+  group_by(grid, year) %>% 
+  summarize(growth_rate = mean(growth, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(growth_rate = if_else(is.finite(growth_rate), growth_rate, NA_real_))
+# bring into litter summary table
+litter_summ <- litter_summ %>% 
+  left_join(lsize, by = c("grid", "year")) %>% 
+  left_join(grate, by = c("grid", "year"))
+
+## combine everything together
+results <- trapping_summ %>% 
+  left_join(feeding_obs, by = c("grid", "year")) %>% 
+  left_join(litter_summ, by = c("grid", "year")) %>% 
+  mutate(year = as.integer(year))
+write_csv(results, "data/grids_yearly-summary.csv", na = "")
+# export weekly feeding obs as well
+write_csv(feeding_obs_wk, "data/grids_weekly-feeding-obs.csv", na = "")
