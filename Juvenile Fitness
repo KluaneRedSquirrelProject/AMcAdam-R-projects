@@ -1,0 +1,236 @@
+library(krsp)
+library(stringr)
+library(lubridate)
+library(readr)
+
+# begin by pulling tables from database using dplyr
+# we could also have written a sql query, which may have been easier here
+# note that a variety of warnings will be raised here and can safely be ignored
+
+con = krsp_connect(group = "krsp-aws")
+
+# juvenile table
+juvenile <- tbl(con, "juvenile") %>% 
+  select(squirrel_id, litter_id, sex, weight, tagwt = tagWT)
+# litter level information
+litter <- tbl(con, "litter") %>% 
+  # exclusions
+  filter(yr >= 1989,
+         !grid %in% c("EN", "FL", "SX"),
+         !(grid == "AG" & yr < 2004),
+         !(grid == "LL" & yr >= 1997 & yr <= 2003)) %>% 
+  select(litter_id = id,
+         year = yr, field_bdate = fieldBDate, n1_date = date1, tag_date = tagDt,
+         mother_id = squirrel_id, grid, locx, locy, ln, food)
+results <- inner_join(juvenile, litter, by = "litter_id")
+# flastall - juvenile
+flastall_juv <- tbl(con, "FLastAll") %>% 
+  select(squirrel_id, date_end = dateE, fate_end = f2)
+results <- left_join(results, flastall_juv, by = "squirrel_id")
+# flastall - mother
+flastall_mom <- tbl(con, "FLastAll") %>% 
+  select(mother_id = squirrel_id, mother_byear = BYear, mother_bcert = bCert)
+results <- left_join(results, flastall_mom, by = "mother_id")
+# until this point no data has been pulled from database
+# dplyr has constructed an sql query for us, which we can now force it to run
+results <- collect(results)
+
+# this is how you would do this with a sql query
+# results will be identical
+# query <- "
+#   SELECT
+#   	# juvenile
+#     j.squirrel_id, j.litter_id, j.sex, j.weight, j.tagWT AS tagwt,
+#     # litter
+#     l.yr AS year,
+#     l.fieldBDate AS field_bdate, l.date1 AS n1_date, l.tagDt AS tag_date,
+#     l.squirrel_id AS mother_id, l.grid, l.locx, l.locy, l.ln, l.food,
+#     # FLastAll - juvenile
+#     fj.dateE AS date_end, fj.f2 AS fate_end,
+#     # FLastAll - mother
+#     fm.BYear AS mother_byear, fm.bCert AS mother_bcert
+#   FROM
+#     juvenile							AS j
+#     INNER JOIN	litter 		AS l
+#       ON j.litter_id = l.id
+#     LEFT JOIN FLastAll		AS fj
+#       ON j.squirrel_id = fj.squirrel_id
+#     LEFT JOIN FLastAll		AS fm
+#       ON l.squirrel_id = fm.squirrel_id
+#     WHERE
+#       yr >= 1989
+#       AND NOT (grid IN ('EN', 'FL', 'SX'))
+#       AND NOT (grid = 'AG' AND yr < 2004)
+#       AND NOT (grid = 'LL' AND yr >= 1997 AND yr <= 2003);"
+# con <- krsp_connect()
+# results <- krsp_sql(con, query)
+
+# clean up variables
+results <- results %>% 
+  # ids imported as numeric, convert back to integer
+  mutate(mother_id = as.integer(mother_id),
+         squirrel_id = as.integer(squirrel_id),
+         litter_id = as.integer(litter_id)) %>% 
+  # convert locs to numeric values
+  mutate(locx = loc_to_numeric(locx),
+         locy = loc_to_numeric(locy)) %>% 
+  # convert dates from character to date class
+  mutate(field_bdate = ymd(field_bdate),
+         n1_date = ymd(n1_date),
+         tag_date = ymd(tag_date),
+         date_end = ymd(date_end))
+
+# calculate litter size
+results <- results %>% 
+  group_by(litter_id) %>% 
+  summarize(litter_size = n()) %>% 
+  inner_join(results, ., by = "litter_id")
+# add aditional fields
+results <- results %>% 
+  mutate(
+    # growth rate
+    nest_days = as.numeric(difftime(tag_date, n1_date, units = "days")),
+    growth = (tagwt - weight) / nest_days,
+    # calculate birth date as julian day
+    bdate = yday(field_bdate),
+    # calculate age as of last sighting
+    age_last = as.integer(difftime(date_end, field_bdate, units = "days")))
+# there are various exlcusions for which growth rate shouldn't be calculated
+results <- results %>% 
+  mutate(
+    # n1 weight between 0 and 50 g
+    growth = if_else(is.na(weight) | !between(weight, 0, 50),
+                     NA_real_, growth),
+    # tag weight between 0 and 100 g
+    growth = if_else(is.na(tagwt) | !between(tagwt, 0, 100),
+                     NA_real_, growth),
+    # tag date at least 5 days after n1 date
+    growth = if_else(nest_days < 5, NA_real_, growth),
+    # exclude food manipulation experiments
+    growth = if_else(food %in% c(1, 4, 5, 6, 7, 9, 10, 13),
+                     NA_real_, growth)) %>% 
+  select(-nest_days)
+
+# bring in census/dbaMidden fields
+midden <- tbl(con, "dbamidden") %>% 
+  filter(!is.null(fate), !is.null(reflo),
+         !(fate == 3)) %>% 
+  select(squirrel_id, grid, census_date = date,
+         census_reflo = reflo, census_locx = locX, census_locy = locY,
+         census_fate = fate, 
+         # def used to break ties, i.e. which is main midden
+         census_def = def) %>% 
+  collect()
+census <- tbl(con, "census") %>% 
+  filter(!is.null(sq_fate), !is.null(reflo),
+         !(sq_fate %in% c(3, 4, 5, 7, 9, 11, 12))) %>% 
+  select(squirrel_id, grid = gr, census_date,
+         census_reflo = reflo, census_locx = locx, census_locy = locy,
+         census_fate = sq_fate,
+         # def used to break ties, i.e. which is main midden
+         census_def = -sq_fate) %>% 
+  collect()
+# combine sources
+census <- bind_rows(midden, census) %>% 
+  # remove duplicates, probably accidentally added twice on data entry
+  distinct() %>% 
+  mutate(squirrel_id = as.integer(squirrel_id),
+         census_year = year(census_date) %>% as.integer(),
+         census_month = month(census_date) %>% as.integer(),
+         # distinguish between sources
+         census_source = if_else(census_year <= 2011, "midden", "census"),
+         # convert locs to numeric
+         census_locx = loc_to_numeric(census_locx),
+         census_locy = loc_to_numeric(census_locy))
+
+# identify new middens in census table
+midden_all <- tbl(con, "dbamidden") %>% 
+  select(grid, census_reflo = reflo, census_date = date) %>% 
+  collect()
+census_all <- tbl(con, "census") %>% 
+  select(grid = gr, census_reflo = reflo, census_date) %>% 
+  collect()
+mid_new <- bind_rows(midden_all, census_all) %>% 
+  mutate(census_year = year(census_date) %>% as.integer()) %>% 
+  # list of distinct middens in each year
+  distinct(grid, census_reflo, census_year) %>%
+  # check for valid grids and reflos
+  filter(str_detect(grid, "^[A-Z]{2}$"),
+         str_detect(census_reflo, "^-?[A-Z0-9][.]?[0-9]{1,2}[.]?$")) %>% 
+  group_by(grid, census_reflo) %>% 
+  arrange(grid, census_reflo, census_year) %>% 
+  # years since last occurrence of this midden
+  mutate(census_previous = census_year - lag(census_year)) %>% 
+  ungroup() %>% 
+  # new middens are those not see in more than 2 years
+  mutate(new_midden = (is.na(census_previous) | census_previous > 2)) %>% 
+  select(grid, census_reflo, census_year, census_previous, new_midden)
+
+# bring back in to main census dataset
+census <- census %>% 
+  left_join(mid_new, by = c("grid", "census_reflo", "census_year")) %>% 
+  select(-grid) %>% 
+  # for old midden census, new middens have fate 5 or 6
+  mutate(new_midden = if_else(census_source == "midden",
+                              census_fate %in% c(5, 6), new_midden)) %>% 
+  # there are ~35 middens with obviously erroneous reflos
+  # can't determine new_midden for these, so assume they're not new
+  mutate(new_midden = coalesce(new_midden, FALSE))
+
+# for each squirrel, find first record
+census_first <- results %>% 
+  # match on squirrel and birth year
+  distinct(squirrel_id) %>% 
+  inner_join(census, by = "squirrel_id") %>% 
+  # now select earliest record
+  group_by(squirrel_id) %>% 
+  top_n(-1, census_date)
+# still some duplicates, so use def field to break ties
+# output duplicates to file
+census_first %>% 
+  count(squirrel_id) %>% 
+  filter(n > 1) %>% 
+  write_csv("data/multiple-middens.csv")
+census_first <- census_first %>% 
+  top_n(1, census_def) %>% 
+  # for remaining ~150 duplicates, just choose a midden randomly
+  filter(row_number() == 1) %>% 
+  ungroup()
+# join into results table
+results <- left_join(results, census_first, by = "squirrel_id")
+
+# add new census-based fields
+results <- results %>% 
+  mutate(
+    # did the squirrel survive to 200 days?
+    survived_200d = !(is.na(census_source) | age_last < 200),
+    # calculate distance between recruited location and natal midden
+    distance = 30 * sqrt((locx - census_locx) ^ 2 + (locy - census_locy) ^ 2),
+    philopatric = (distance <= 30))
+
+# fitness
+results$fitness_coding <- case_when(
+  results$survived_200d == 0 ~ "dead",
+  results$philopatric ~ "philo",
+  results$new_midden ~ "new",
+  # has a midden by august of birth year
+  results$census_year == results$year & results$census_month <= 8 ~ "compete",
+  # has a midden, but after august census in birth year or in next year
+  results$census_year == results$year & results$census_month > 8 ~ "floater",
+  (results$census_year - results$year) == 1 & results$census_month <= 5 ~ "floater",
+  TRUE ~ "unknown")
+
+# remove fitness for LL 2012 and CH 2011
+results <- results %>% 
+  mutate(survived_200d = ifelse(grid == "LL" & year == 2012, NA, survived_200d),
+         fitness_coding = ifelse(grid == "LL" & year == 2012, NA, fitness_coding),
+         survived_200d = ifelse(grid == "CH" & year == 2011, NA, survived_200d),
+         fitness_coding = ifelse(grid == "CH" & year == 2011, NA, fitness_coding))
+
+# output
+# convert T/F to 1/0
+results %>% 
+  mutate(new_midden = as.integer(new_midden),
+         survived_200d = as.integer(survived_200d),
+         philopatric = as.integer(philopatric)) %>% 
+  write_csv("data/juvenile-fitness.csv", na = "")
