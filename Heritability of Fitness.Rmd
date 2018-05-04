@@ -1,0 +1,523 @@
+---
+title: "Generating pedigree and lifetime fitness data for Kruuk & Bonnet project"
+author: "Andrew McAdam"
+date: '2018-01-29'
+bibliography: krsp_herit_fit.bib
+output: pdf_document
+---
+\raggedright
+\tableofcontents  
+
+# Problems, Warnings and Things Still To Do
+1. Death Year might do what you want.  For example, it could very much matter whether a squirrel died before or after the breeding season within a particular calendar year.  I have also included dateE and an explanation of how this might be used to filter animals that are still alive as of the end of the data collection period.
+
+2. There are 241 squirrels for which birth dates were not known, but for which we were certain of their birth year (bcert==Y).  These would have been pups tagged out of the nest or immigrants where we knew they were YY.  These could be included or excluded.
+
+3. There is one squirrel for which we do not have a sex scored for it.  This squirrel could be excluded.
+
+
+# Request From Loeske and Timothee
+ For each study, the plan is to analyse measures of:
+(i)    lifetime breeding success LBS, defined as the number of offspring 
+produced for every offspring in the data-set; and
+(ii)    lifetime reproductive success LRS, defined as the number of 
+recruits produced per recruit (only calculated for recruits or breeders, 
+this incorporates offspring survival).
+LBS and LRS are thus two slightly different measures, each spanning a 
+generation.
+
+1. Pedigree - 3 columns of individual, mum, dad.
+2. Phenotypic trait data for individuals with complete natural 
+lifespans: ID, Sex, YearOfBirth, YearOfDeath , LBS, LRS (see definitions 
+above), and any other information that might be relevant (e.g. common 
+environment variables: nestID, spatial info). I realise estimating both 
+LBS and LRS might not be feasible in some systems, but one or other 
+would be fine on their own (the same applies for female vs male values). 
+And if YearOfDeath is not known exactly, please give some other 
+indication of whether the fitness record for any individual is likely to 
+be complete or not.
+3. A ReadMe file with any relevant information we might need: e.g, any 
+relevant quirks of the files or of the biology, how paternity was 
+assigned, relevant references, etc..
+
+#Descriptions of the Data and Caveats
+## General
+Data were collected between 1989 and 2016 on two long-term control study areas in the southwestern corner of the Yukon Territory, Canada.  Each study area is approximately 40 ha in size.
+
+## Maternity and Paternity
+Maternity is determined when pups are still within their natal nest.  We access pups within a few days of being born (6.8 ± 0.2 d; median = 5 d; mode = 2 d; @MCAdam:2007wl).  This is when they are first assessed, marked and tissue is collected for paternity.
+
+Paternity was assigned for pups born between 2003 and 2014 using 16 microsatellites.  Details on paternity assignment can be found in Lane et al. [-@Lane:2008iu].
+
+## Who is dead?  
+Any female with dateE < "2016-08-01" should be considered to be dead as of the end of the 2016 season, which is the end of data collection with respect to these data.  dateE is the last date on which a squirrel was sighted or captured alive.  After this date it was assumed to be dead.  There were 9 females from the 2010 cohort who were still alive in 2017.  There were no females for the 2009 cohort who were still alive in 2017.  So as of the data we have here, we have complete lifetime data for females from all cohorts up to and including 2009.  
+
+We have assigned paternity only starting in 2003 and ending in 2014 (last 3 years have not yet been completed).  So males should be considered to have complete lifetime data if they were born in cohorts after and including 2002 and if their dateE < "2014-08-01".
+
+
+# Variables and Their Explanations
+
+*id* - A unique identifier for each squirrel
+
+*litter_id* - A unique indentifier for each litter
+
+*Grid* - One of two long-term control study areas (KL = Kloo; SU = Sulphur)
+
+*Sex* - M or F; there is one squirrel of unknown sex
+
+*YearOfBirth* - birth year
+
+*YearOfDeath* - year in which squirrel was last sighted or captured alive.  This might not be a good measure of the year in which the squirrel died and the timing within the year could be quite important.  So I have also included dateE below, which should work better than dyear.
+
+*dateE* - Date on which the squirrel was last seen or captured alive (yyyy-mm-dd).  Squirrel was assumed dead after this point.
+
+*LBS* - total number of offspring born to each squirrel born in the study.
+
+*LRS* - total number of offspring recruited for each recruited squirrel.  In our study recruitment is determined based on survival to 200 days of age.  Because of our seasonal data collection, this requires survival to the following spring when squirrels could have bred for the first time.  Squirrels that did not survive to 200 days of age have LRS = NA.
+
+*birth_conest* - Cone index for the cone crop in the autumn of the year in which the squirrel was born.
+
+*birth_conestm1* - Cone index for the cone crop in the autumn prior to the year in which the squirrel was born.
+
+*birth_density* - spring population density (squirrels/ha.) for the spring in which the squirrel was born.
+
+*mast* - was the squirrel born in a mast year or not? (y or n).
+
+These are the variables that were requested as well as a couple of environmental variables just for kicks.  There are of course many other variables that I have left out, but which could be added if it woudl be helpful.
+
+
+# Exclusions
+Any squirrel that died of un-natural causes (*f2* %in% c("4", "5", "11", "12", "22"); new dead in trap, recap dead in trap, roadkill, handling death, planned euthanasia) has been excluded.
+
+# Setup
+Much of this is not included in PDF output for clarity
+
+## Load Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, tidy.opts=list(width.cutoff=60))
+
+#library (plyr)  #Causes conflicts with dplyr - needs to load first
+library (krsp)
+library (dplyr)
+library (lubridate)
+require(pedantics)
+
+select = dplyr::select #necessary as MASS also has a select function
+
+```
+
+## Connection to Database in Cloud
+```{r connection, include=FALSE}
+con <- krsp_connect(group="krsp-aws") #Amazon instance - preferred
+con2 <- krsp_connect(dbname="krsp2017") #Amazon instance - preferred
+```
+
+# Generate Pedigree
+Pedigree is pulled from flastall2 in the cloud and written to a csv file in the data folder.
+Columns are id, dam and sire.
+```{r Create Pedigree}
+ped<-tbl(con, "flastall2") %>% 
+  select(id=squirrel_id, dam=dam_id, sire=sire_id) %>% 
+  filter(!(is.na(id))) %>% 
+  group_by(id) %>% 
+  collect() %>% 
+  filter(row_number() == 1) %>% 
+  ungroup()
+
+krsp_ped = fixPedigree(ped)
+write.csv(krsp_ped, file = "data/krsp_ped.csv")
+
+#Summaries
+#krspPedigreeSummary<-pedigreeStats(krsp_ped, graphicalReport="n")
+#pedStatSummary(krspPedigreeSummary) #Is this working?
+#drawPedigree(krsp_ped)
+
+#save.image(file="Lifetime_fitness_pedstats.RData")
+```
+
+
+# Prepare file with lifetime data
+Only include KL, SU
+
+Variables to include for squirrels:
+id, Sex, YearOfBirth, YearOfDeath, LBS, LRS, Grid, litter_id, birth_conest, birth_conestm1, birth_density  
+
+
+##Bring in some supplementary tables
+Unfortunately these are csv tables on McAdam's laptop.  Most are derived directly from the database, but I haven't yet moved over the code to here to directly generate these tables from scratch.
+```{r bring in csv files}
+grids_cone_data <- read.csv(
+  "/Users/andrewmcadam/Dropbox/R datafiles/KRSP/cone-counts/data/grids_cones.csv", 
+    header=T,
+    stringsAsFactors = FALSE) %>%
+  mutate(Year=as.integer(Year)) %>% 
+  mutate(cones_t = cone_index_t) %>% 
+  mutate(cones_tm1 = cone_index_tm1) %>% 
+  select (Year, Grid, cones_t, cones_tm1, mast, Exp, EXP_label) %>% 
+  mutate (cones_tm1 = ifelse(Year == 2005 & Grid == "AG", 1.045008523, cones_tm1)) 
+#No cone data available for AG in 2004 so this needs to be added
+#assumed to be equal to cone index on LL
+
+flastall <- tbl(con, "flastall2") %>% 
+  #flastall2 contains juveniles that were not tagged
+  # exclusions
+  filter(gr %in% c("SU", "KL")) %>% 
+  select(squirrel_id, gr, byear=byear, dam_id, sire_id, bcert=bcert, sex)
+
+flastall<-collect(flastall)
+
+
+density <- read.csv("/Users/andrewmcadam/Dropbox/R datafiles/KRSP/krsp_density/data/grids_density.csv") %>% 
+  select(year, grid, spr_density)
+
+```
+
+
+## Generate Lifetime Table
+This table pulls mostly from the *flastall2* table in the cloud, but also joins data from *litter* and *juvenile*.
+```{r create lifetime table}
+lifetime<-tbl(con, "flastall2") %>% 
+  filter(byear >= 1989,
+         gr %in% c("KL", "SU"),
+         bcert=="Y",
+         !(f2 %in% c("4", "5", "11", "12", "22"))) %>% 
+  select(squirrel_id, grid=gr, sex, dates, f1, byear=byear, litter_id, 
+         dam_id, sire_id, bcert=bcert, new_grid=newgr, new_sex=newsex, 
+         datee, f2, locX, locY) %>% 
+  collect()
+
+##  Note there are many behavioural records for squirrel_id=6230 that dont seem like they should be for her.  dateE should be 1999-08-06
+## There seems to be a dead squirrel (squirrel_id = 7581) that showed up in the census when dead.  The problem here is that there was not a detail enetered in the behavioural record.  I have changed the flastall2 query so that it catches this now.
+
+## There are two litters for squirrel_id = 11486 (F5874/F7334; C1.) that are squished together as the same litter_id = 5032.  This is the correct id for some of the juves but the rest are from a second litter.  Need to get proper litter info for this litter and assign a new litter id.
+
+#fix known errors
+lifetime<-lifetime %>% 
+  mutate (datee = ifelse(squirrel_id==6230, "1999-08-06", datee)) %>% 
+  mutate (datee = ifelse(squirrel_id==7581, "1998-06-26", datee)) %>% 
+  mutate (sex = ifelse (squirrel_id %in% c(6134, 5893, 5130, 4549, 4918, 7839), "M", sex)) %>% 
+  mutate (sex = ifelse (squirrel_id==5893, "M", sex)) %>% 
+  mutate (sex = ifelse (squirrel_id==7905, "F", sex)) %>%
+  mutate (sex = ifelse (squirrel_id==7269, "F", sex)) %>%
+  mutate (sex = ifelse (squirrel_id==8398, "F", sex)) %>% 
+  mutate (sex = ifelse (squirrel_id==6333, "F", sex))
+
+#Link in juvenile data
+juvenile_temp <- tbl(con, "juvenile") %>% 
+  select(squirrel_id, litter_id) %>% 
+  collect() 
+
+litter_temp <- tbl(con, "litter") %>% 
+   filter(yr >= 1989,
+         grid %in% c("KL", "SU")) %>% 
+  select(litter_id = id, field_bdate = fieldBDate) %>% 
+  collect() 
+
+juvenile_temp<-juvenile_temp %>% 
+  left_join(litter_temp, by="litter_id") %>% 
+  select(squirrel_id, field_bdate)
+
+lifetime<-lifetime %>% 
+  left_join(juvenile_temp, by="squirrel_id") %>% 
+  #left_join(food_coding, by = c("grid", "byear"="yr")) %>% 
+  left_join(grids_cone_data, by = c("grid"="Grid", "byear"="Year")) %>% 
+  left_join(density, by = c("grid", "byear"="year")) 
+
+
+rm(juvenile_temp, litter_temp)
+
+lifetime<-lifetime %>% 
+    mutate(dateE=ymd(datee),
+         dateS=ymd(dates),
+         field_bdate=ymd(field_bdate),
+         longevity = as.integer(difftime(datee, field_bdate, units = "days")),
+         grid=as.factor(grid),
+         sex=as.factor(sex),
+         bcert=as.factor(bcert),
+         dyear=year(dateE)) %>% 
+  select (squirrel_id, litter_id, grid, sex, byear, dyear, dateE, dateS, field_bdate, 
+          cones_t, cones_tm1, spr_density, mast, dam_id, sire_id, bcert, longevity)
+
+## Calculate LBS
+lifetime <- lifetime %>% 
+  group_by(dam_id) %>% 
+  summarize(dam_lbs = n()) %>% 
+  left_join(lifetime, ., by = c("squirrel_id"= "dam_id"))
+
+lifetime <- lifetime %>% 
+  group_by(sire_id) %>% 
+  summarize(sire_lbs = n()) %>% 
+  left_join(lifetime, ., by = c("squirrel_id"= "sire_id"))
+
+lifetime<-lifetime %>% 
+  mutate(dam_lbs = ifelse(is.na(dam_lbs)&sex=="F", 0, dam_lbs),
+         sire_lbs = ifelse(is.na(sire_lbs)&sex=="M", 0, sire_lbs),
+         sire_lbs = ifelse(byear>2001, sire_lbs, NA_real_)) 
+
+
+## Calculate LRS
+lifetime <- lifetime %>% 
+  filter(longevity > 199) %>% 
+  group_by(dam_id) %>% 
+  summarize(dam_lrs = n()) %>% 
+  left_join(lifetime, ., by = c("squirrel_id"= "dam_id"))
+
+lifetime <- lifetime %>% 
+  filter(longevity > 199) %>% 
+  group_by(sire_id) %>% 
+  summarize(sire_lrs = n()) %>% 
+  left_join(lifetime, ., by = c("squirrel_id"= "sire_id"))
+
+lifetime<-lifetime %>% 
+  mutate(dam_lrs = ifelse(is.na(dam_lrs)&sex=="F", 0, dam_lrs),
+         sire_lrs = ifelse(is.na(sire_lrs)&sex=="M", 0, sire_lrs),
+         sire_lrs = ifelse(byear>2001, sire_lrs, NA_real_))
+
+
+lifetime<-lifetime %>% 
+  mutate(LBS = coalesce(lifetime$dam_lbs, lifetime$sire_lbs),
+         LRS = coalesce(lifetime$dam_lrs, lifetime$sire_lrs))
+
+# LRS not defined for squirrels that did not survive to 200 days of age.
+lifetime<-lifetime %>% 
+  mutate(LRS = ifelse(longevity > 199, LRS, NA_real_))
+```
+Note that there is one pup without a sex.  It was found dead in the nest in 2011 (only pup in the nest).  For some reason it wasn't sexed.  Could be excluded.
+
+
+
+
+
+# Any missing data during lifetime?
+*BR*  breeding status
+
+0 = no
+
+1 = yes
+
+2 = yes but no young (lactating then lost litter)
+
+3 = yes, information missed
+
+4 = yes, but babies died before they were big enough to be tagged (new in 1996)
+
+5 = data missed, no idea if bred or not, usually used if never seen in a year but found in previous and following years (new in 1997)
+
+6 = pregnant (determined by palpatation) or lactating but disappeared/ died before found young (new in 1997)
+
+7 = P2/P3 and then lost litter (new in 2000)
+
+
+
+*FOOD*  experimental manipulations:
+
+0 = control
+
+1 = food add
+
+2 = Juv cross-fostered**
+
+3 = sibling cross-fostered**
+
+4 = food add+juv cross fostered**
+
+5 = food add+sibling cross-fostered**
+
+6 = wool add**
+
+7 = wool+food add**
+
+8 = control swap
+
+9 = litter reduction
+
+10 = litter augment
+
+11 = Giberellin3 add (new in 2002)
+
+12 = Giberellin10 add (new in 2002)
+
+13 = food depletion (new in 2003)
+
+14 = GC 0mg (stress experiment 0mg cortisol – sham; new in 2016)
+
+15 = GC 8mg (stress experiment 8mg cortisol; new in 2016)
+
+16 = GC 0mg cross fostered (stress experiment 0mg cortisol – sham and cross fostered; new in 2016)
+
+17 = GC 8mg cross fostered (stress experiment 8mg cortisol and cross fostered; new in 2016)
+
+```{r Clean lifetime table}
+good_litters<-c("0", "1", "2", "4", "6", "7")
+missed_litters<-c("3", "5")
+  
+good_litter_records <- tbl(con, "litter") %>% 
+  #Correct known errors
+  mutate (ln = ifelse(id==6049, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4662, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4663, 3, ln)) %>% 
+  mutate (br = ifelse(id==4663, 2, br)) %>% 
+  mutate (yr = ifelse(id==2781, 2011, yr)) %>% 
+  mutate (grid = ifelse(id==3148, "AG", grid)) %>% 
+  # exclusions
+  filter(yr >= 1989,
+         grid %in% c("KL", "SU"), 
+         br %in% good_litters,
+         ln<2) %>% 
+  select(litter_id = id, squirrel_id) %>% 
+  group_by(squirrel_id) %>% 
+  summarize(num_good_litters = n()) %>%
+  collect()
+  
+  
+bad_litter_records <- tbl(con, "litter") %>% 
+  #Correct known errors
+  mutate (ln = ifelse(id==6049, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4662, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4663, 3, ln)) %>% 
+  mutate (br = ifelse(id==4663, 2, br)) %>% 
+  mutate (yr = ifelse(id==2781, 2011, yr)) %>% 
+  mutate (grid = ifelse(id==3148, "AG", grid)) %>% 
+  # exclusions
+  filter(yr >= 1989,
+         grid %in% c("KL", "SU", "CH", "AG", "LL", "JO"), 
+         br %in% missed_litters) %>% 
+  select(litter_id = id, squirrel_id) %>% 
+  group_by(squirrel_id) %>% 
+  summarize(num_missed_litters = n()) %>%
+  collect()
+
+manipulation_codes<-c("1", "4", "5", "9", "10", "13", "14", "15", "16", "17")
+
+manipulated_litter_records <- tbl(con, "litter") %>% 
+  #Correct known errors
+  mutate (ln = ifelse(id==6049, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4662, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4663, 3, ln)) %>% 
+  mutate (br = ifelse(id==4663, 2, br)) %>% 
+  mutate (yr = ifelse(id==2781, 2011, yr)) %>% 
+  mutate (grid = ifelse(id==3148, "AG", grid)) %>% 
+  # exclusions
+  filter(yr >= 1989,
+         grid %in% c("KL", "SU"), 
+         food %in% manipulation_codes) %>% 
+  select(litter_id = id, squirrel_id) %>% 
+  group_by(squirrel_id) %>% 
+  summarize(num_manipulated_litters = n()) %>%
+  collect()
+
+afr <- tbl(con, "litter") %>% 
+  #Correct known errors
+  mutate (ln = ifelse(id==6049, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4662, 2, ln)) %>% 
+  mutate (ln = ifelse(id==4663, 3, ln)) %>% 
+  mutate (br = ifelse(id==4663, 2, br)) %>% 
+  mutate (yr = ifelse(id==2781, 2011, yr)) %>% 
+  mutate (grid = ifelse(id==3148, "AG", grid)) %>% 
+  collect()
+
+afr<-afr %>% 
+  left_join(flastall, by="squirrel_id") %>% 
+  mutate(age=yr-byear) %>%
+  filter (br != 0) %>% 
+  select(squirrel_id, age) %>%
+  group_by(squirrel_id) %>% 
+  summarize(afr = min(age),
+            alr = max(age))
+
+
+lifetime<-lifetime %>% 
+  left_join(good_litter_records, by="squirrel_id") %>% 
+  left_join(bad_litter_records, by="squirrel_id") %>% 
+  left_join(manipulated_litter_records, by="squirrel_id") %>% 
+  left_join(afr, by="squirrel_id") %>% 
+  mutate(num_missed_litters = ifelse(is.na(num_missed_litters), 0, num_missed_litters)) %>% 
+  mutate(num_manipulated_litters = ifelse(is.na(num_manipulated_litters), 0, num_manipulated_litters)) 
+
+rm(afr, bad_litter_records, good_litter_records, good_litters, manipulated_litter_records, manipulation_codes, missed_litters) 
+
+```
+
+#Clean Lifetime Table
+This table will include only those squirrels for which we have not manipulated any of their litters in ways that might affect fitness (There are only 7 females with manipulated litters on KL and SU over this time period).  I have also excluded any squirrel for which we have missed information on any of her litter attempts or if she was missing from the population for some period of time.
+
+Once we have a genotype for a male he is essentially adequately tracked in terms of reproductive success "on our study areas" even if he lives outside our study areas because we can still pick up his paternities.
+
+```{r Create lifetime_clean}
+lifetime_clean<-lifetime %>%
+  filter (num_missed_litters<1, num_manipulated_litters<1,
+          is.na(alr)|is.na(afr)|num_good_litters - (alr-afr) >0)
+```
+
+# Remove unnecessary variable, rename variables and prep for export
+I have tried to use consistent naming conventions to what was requested even though this does not match our traditional naming conventions.
+```{r}
+lifetime_clean<-lifetime_clean %>% 
+  select (id=squirrel_id, litter_id, Grid=grid, Sex=sex, YearOfBirth=byear, 
+          YearOfDeath=dyear, dateE, LBS, LRS, birth_conest=cones_t, 
+          birth_conestm1=cones_tm1, birth_density=spr_density, mast)
+```
+
+
+#Clean up workspace and Export csv file
+Remove the last remaining objects from the workspace and save the workspace for analysis
+
+```{r Clean workspace and export}
+rm(con, con2, density, flastall, grids_cone_data, ped)
+
+write.csv(lifetime_clean, file = "data/krsp_lifetime_data.csv")
+```
+
+#  Quality Control of Data
+Some visualizations and checks of the data.  Not shown.
+```{r Data Quality Control, include=FALSE}
+
+summary (lifetime_clean)
+head(lifetime_clean)
+
+plot(LRS~LBS, data=lifetime_clean, subset=Sex=="F")
+plot(LRS~LBS, data=lifetime_clean, subset=Sex=="M")
+
+library (ggplot2)
+
+data<-lifetime_clean %>% 
+  filter(!is.na(LRS))
+
+ggplot(data = data,
+       mapping = aes(sample = LRS)) + 
+  stat_qq(distribution = stats::qpois,
+          dparams = list(lambda = mean(data$LRS))) + 
+  geom_step(data = data.frame(x = 0:11,
+                              LRS = 0:11),
+            mapping = aes(x = x,
+                          y = LRS),
+            colour = "red",
+            alpha = 0.5) 
+
+
+data2<-lifetime_clean %>% 
+  filter(!is.na(LBS))
+
+ggplot(data = data2,
+       mapping = aes(sample = LBS)) + 
+  stat_qq(distribution = stats::qpois,
+          dparams = list(lambda = mean(data2$LBS))) + 
+  geom_step(data = data.frame(x = 0:32,
+                              LBS = 0:32),
+            mapping = aes(x = x,
+                          y = LBS),
+            colour = "red",
+            alpha = 0.5) 
+
+
+qqnorm(lifetime_clean$LRS)
+###
+# Check that all squirrels are in the pedigree
+
+dim(lifetime_clean[!(lifetime_clean$id %in% krsp_ped$id),])
+
+rm(data, data2)
+```
+
+
+# Key References
