@@ -1,0 +1,416 @@
+---
+title: "KRSP Cone Counts"
+author: "Andrew McAdam"
+date: 'Last updated: Nov 22, 2018'
+output:
+  html_document:
+    df_print: paged
+bibliography: krsp_cones.bib
+---
+\centering
+
+![](KluaneRedSquiD04aR03aP01ZL.jpg)
+
+\raggedright
+\tableofcontents  
+
+
+\clearpage
+```{r packages, echo=F, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning=FALSE)
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(ggplot2)
+library (krsp)
+```
+
+# To Do
+
+1.  Format the Count_date field in cone-counts.csv consistently.
+
+
+# Motivation
+The goals of this document are to:
+
+1.  Provide consistent and transparent calculations of cone abundance that can be used by KRSP personnel for their research.
+2. Explain the different ways that cone abundance can be reported, so we can be consistent in our terminology and usage.
+3. Provide code that will allow us to easily update data summaries when new data become available.
+
+NOTE that key KRSP citations are inlcluded within this document.
+
+
+# Spruce seed as food for red squirrels
+A large proportion of the diet of red squirrels is composed on the seeds of white spruce cones [@Fletcher:2013jh] and the production of spruce cones has been documented to flutuate widely from one year to the next [@LaMontagne:2007ku; @Krebs:2012ju].  Since 1989 we have been measuring the number of cones produced by many trees throughout the study areas as a measure of the availability of food resources for that year.
+
+
+# Protocol
+
+This protocol is described and calibrated in LaMontagne et al. [-@LaMontagne:2005uo].
+
+Cones are counted at grid stations when they are fully formed and visible but harvesting by squirrels has not yet begun (usually mid-July to Aug 10).  This was initially started in collaboration with the Kluane Boreal Forest Ecosystem Project. On Sulphur, Lloyd, Joe, and Agnes, cone counts are performed at hare trapping stations. On Kloo, and Chitty a different sampling scheme is used (e.g., Kloo –3 to J, odd #s between 1-12).  Refer to the cone file or sheets in the grid binders for locations. At each station, the closest spruce tree to the grid stake that has a DBH greater than 5 cm should already be marked with red flagging (and usually have CONE COUNT written on the flagging).  Use the recorded DBH from previous years to help relocate trees that do not have flagging on them. 
+
+Count the number of new cones in the top 3 metres (10 ft) of the tree using a pair of binoculars and estimate the percent cover of cones from a location where you have a clear view of one side of the tree.  If any datum is missing, enter it as “-1” in the computer file.  Beginning in 2009, the number of old cones (cones from previous years that are open but still on the tree in the top three metres.  
+
+If the total number of cones exceeds 100, take a photograph of the top of the tree using a telephoto lens, ensuring that the contrast and lighting is optimal. This was originally done with a telephoto lens, with cones counted from the photograph using a  magnifying glass and fine black marker to keep track of those cones already counted (or prick cones with a pin and count the pin pricks on the reverse).  In recent years this has been done with a digital camera. Detailed instructions for extracting cone count data from digital photographs is provided below (see Taking Photographs).
+
+# IMPORTANT Special Note about Cone Counts in 1989
+Note that no data were recorded in 1989 because there were no cones on any trees (observed in the field).  In 2016, McAdam entered data for 1989 as all zero cones for all trees on KL and SU that were counted in 1990.  It is important to note that these data were not collected in the field for each individual tree.  Instead it was obserevd that there were no cones on any tree in 1989 and no cone counts were performed.  It is worth noting that in 2015 there were also zero cones on all 561 trees counted.
+
+# Meta-Data
+
+Variables:
+
+*Grid* - Study are from which the data were collected
+
+*Year* - Year in which the data were collected
+
+*Stake* - Grid stake closest to the tree (not collected in all years)
+
+*LocX* - Grid location for the tree
+
+*LocY* - Grid location for the tree
+
+*DBH* - Diameter at breast hieght (cm) for the tree.  Not updated each year.
+
+*Distance* - Distance of the tree from the grid stake.
+
+*Direction* - Direction of the tree from the grid stake.
+
+*Per* - Percent cover of cones in top 3m of tree
+
+*New_Tree* (Y/N) - Is this a new tree counted for the first time?
+
+*Status* - Bark beetle status (Need coding here)
+
+*Count_Date* - Date on which the cones were counted (this field needs to be formatted consistently)
+
+*NumNew* - Number of cones in top 3m of tree
+
+*Comments* - Comments
+
+
+#Number of Cone Count Observations Per Year
+
+```{r}
+library (krsp)
+con <- krsp_connect(group="krsp-aws")
+#con <-krsp_connect (dbname="krsp")
+#krsp_tables(con)
+
+selected_grids <- c("AG", "CH", "JO", "KL", "LL", "SU")
+
+cone_counts<-tbl(con, "cones") %>%
+  filter(Grid %in% selected_grids, Year>=1988) %>%
+  collect() %>%
+  mutate(Year = as.numeric(Year), LocX = as.numeric(LocX), LocY = as.numeric(LocY), DBH = as.numeric(DBH), Per = as.numeric(Per), NumNew = as.numeric(NumNew))
+
+
+# Problem is that the variables are coming in as characters.  This should fix it. Once the new cone data are uplaoded to teh cloud then we should be able to use the code above.
+
+# cone_counts <- read.csv("data/raw/cone-counts.csv", header=T,
+#                        stringsAsFactors = FALSE)
+# cone_counts <- filter(cone_counts, Grid %in% selected_grids, Year>=1988)
+
+
+cone_counts %>% 
+  group_by(Year, Grid) %>% 
+  summarise(n_cones = sum(!is.na(NumNew))) %>% 
+  spread(Grid, n_cones, fill = NA) %>% 
+  kable
+
+
+cone_output <- group_by(cone_counts, Year, Grid) %>% 
+  summarise(num_trees = sum(!is.na(NumNew))) %>% 
+  mutate(GridYear = paste0(Grid, Year)) %>% ### I don't think you need this field
+  select(Year, Grid, GridYear, num_trees)
+
+```
+
+# Cone Count Measurements
+Cone counts can be reported in three possible ways:
+
+1.  Raw counts as observed in the field.
+2.  Cones Index - ln-transformed cone counts (ln[x+1] transformed).
+3.  Counts of the actual number of cones per tree.
+
+## 1. Raw Cone Counts
+These are the raw cone counts as recorded in the field and entered in the datafile.  These should be referred to as '*cone counts*'.  For example, 'The average number of spruce cones counted per tree was 126.'.  These are the raw data but I am not aware of any specific case where these data are particularly useful.  They are just an index of the number of cones on each tree and are also not statistically very well behaved.  In the `cone-counts.csv` file the raw cone counts are represented by the `NumNew` variable.  Historically only new cones were counted as `Num`.  Between 2009 and 2015, new cones and old cones were differentiated as `NumNew` and `NumOld`.
+
+```{r}
+raw_cone_counts <- group_by(cone_counts, Year, Grid) %>% 
+  summarize(cone_counts = mean(NumNew, na.rm = TRUE))
+
+cone_output <- left_join(cone_output, raw_cone_counts, by = c("Grid", "Year")) %>% 
+  mutate(cone_counts = ifelse(is.finite(cone_counts), cone_counts, NA))
+
+#Note that although the data are being output with separate grid-years as unique rows
+#above, the data are displayed here with separate columns for each grid for clarity
+select(cone_output, Year, Grid, cone_counts) %>% 
+  spread(key = Grid, value = cone_counts, fill = NA) %>% 
+  kable(digits = 3)
+```
+
+## 2. Cone Index
+The '*cone index*' is a simple transformation of the *cone count*.  The raw *cone count* data are ln (x+1) transformed.  In R the notation for the natural logarithm is `log()`.  1 is added to each observation before transforming to make an observation of 0 identifiable.
+
+The *cone index*, is truly an index of cone abduance, so it does not have a direct biological interpretation.  Also, since the index is on a log scale it can be hard to assess the magnitude of effects and readers are often not impressed by the magnitude of mast events when the data are depicted on this scale.  Despite these limitations, these data are statistically very well behaved (normally distributed), so **this is the best measure to include in statistical analyses (i.e. as a predictor of some aspect of red squirrel biology)**.
+
+```{r}
+cone_index_data <- cone_counts %>% 
+  mutate(cone_index = log(NumNew + 1)) %>% 
+  group_by(Year, Grid) %>% 
+  summarize(cone_index = mean(cone_index, na.rm = TRUE))
+
+cone_output <- left_join(cone_output, cone_index_data, by = c("Grid", "Year")) %>% 
+  mutate(cone_index_t = ifelse(is.finite(cone_index), cone_index, NA)) %>% 
+  mutate(Year_tp1 = Year+1)
+
+cone_temp<-cone_output %>% 
+  select(Grid, Year, Year_tp1, cone_index_tm1=cone_index_t)
+  
+cone_output<-left_join(cone_output, cone_temp, by=c("Grid", "Year" = "Year_tp1")) %>% 
+  select(Year, Grid, GridYear, num_trees, cone_counts, cone_index_t, cone_index_tm1)
+
+select(cone_output, Year, Grid, cone_index_t) %>% 
+  spread(key = Grid, value = cone_index_t, fill = NA) %>% 
+  kable(digits = 3)
+```
+
+
+
+```{r echo=F}
+cone_index_data <- arrange(cone_index_data, Grid, Year)
+plot(cone_index_data$cone_index~cone_index_data$Year, type="b", 
+     subset=cone_index_data$Grid=="KL", xlab="Year", ylab="Cone Index", 
+     pch=19, ylim=c(0, 7))
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="AG"&cone_index_data$Year<1996, 
+       pch=19, col="blue")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="AG"&cone_index_data$Year>1996,
+       pch=19, col="blue")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="CH"&cone_index_data$Year<1996,
+       pch=19, col="red")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="CH"&cone_index_data$Year>1996,
+       pch=19, col="red")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="LL", pch=19, col="grey")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="SU", pch=19, col="green")
+points(cone_index_data$cone_index~cone_index_data$Year, type="b",
+       subset=cone_index_data$Grid=="JO", pch=19, col="orange")
+legend (1988, 7.3, c("KL", "AG", "CH", "LL", "SU", "JO"),
+        col=c("black", "blue", "red", "grey", "green", "orange"),
+        pch=19, bty="n", cex=0.9)
+```
+
+## 3. Total Number of Cones Per Tree
+
+Krebs et al. [-@Krebs:2012ju] provide an equation for converting cone counts to *total number of cones per tree* based on the calibration from LaMontagne et al. [-@LaMontagne:2005uo].
+
+This is the biologically most relevant measure of cone production and is useful for depicting how dramatic the mast years are on an intuitove scale, but these data are very skewed both within and across years so they can be tricky to include in statistical models.
+
+$$ TotalNumberOfCones = 1.11568*exp(0.1681+1.1891*log(ConeCount+0.01)) $$
+
+
+```{r}
+cone_counts <- mutate(cone_counts,
+                      total_cones = 1.11568 * exp(0.1681 + 1.1891 * log(NumNew + 0.01)))
+
+total_cones_data <- group_by(cone_counts, Year, Grid) %>% 
+  summarize(total_cones = mean(total_cones, na.rm = TRUE))
+
+cone_output <- left_join(cone_output, total_cones_data, by = c("Grid", "Year")) %>% 
+  mutate(total_cones = ifelse(is.finite(total_cones), total_cones, NA))
+
+# Manually code mast years
+
+cone_output<-cone_output %>%
+  mutate (mast = "n") %>% 
+  mutate (mast = ifelse(Grid=="KL"&Year==1993, "y", mast),
+          mast = ifelse(Grid=="LL"&Year==1993, "y", mast),
+          mast = ifelse(Grid=="SU"&Year==1993, "y", mast),
+          mast = ifelse(Grid=="KL"&Year==1998, "y", mast),
+          mast = ifelse(Grid=="LL"&Year==1998, "y", mast),
+          mast = ifelse(Grid=="SU"&Year==1998, "y", mast),
+          mast = ifelse(Grid=="KL"&Year==2005, "y", mast),
+          mast = ifelse(Grid=="JO"&Year==2005, "y", mast),
+          mast = ifelse(Grid=="SU"&Year==2005, "y", mast),
+          mast = ifelse(Grid=="KL"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="LL"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="SU"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="CH"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="JO"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="AG"&Year==2010, "y", mast),
+          mast = ifelse(Grid=="KL"&Year==2014, "y", mast),
+          mast = ifelse(Grid=="LL"&Year==2014, "y", mast),
+          mast = ifelse(Grid=="SU"&Year==2014, "y", mast),
+          mast = ifelse(Grid=="CH"&Year==2014, "y", mast),
+          mast = ifelse(Grid=="JO"&Year==2014, "y", mast),
+          mast = ifelse(Grid=="AG"&Year==2014, "y", mast)) %>% 
+  mutate (Exp = "c") %>% 
+  mutate (Exp = ifelse(Grid=="AG"&Year>2004&Year<2018, "f", Exp),
+          Exp = ifelse(Grid=="JO"&Year>2006&Year<2013, "f", Exp),
+          Exp = ifelse(Grid=="LL"&Year>2005&Year<2012, "f", Exp)) %>% 
+  mutate (EXP_label = 1) %>% 
+  mutate (EXP_label = ifelse(Exp=="f", 19, EXP_label))
+
+write.csv(cone_output, file="grids_cones.csv")
+
+select(cone_output, Year, Grid, total_cones) %>% 
+  spread(key = Grid, value = total_cones, fill = NA) %>% 
+  kable(digits = 3)
+```
+
+
+```{r echo=F}
+#total_cones_data<-total_cones_data[order(total_cones_data$GridYear), ]
+total_cones_data <- arrange(total_cones_data, Grid, Year)
+plot(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="KL", xlab="Year", ylab="Total Cones per Tree", pch=19, ylim=c(0, 2500))
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="AG"&total_cones_data$Year<1996, pch=19, col="blue")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="AG"&total_cones_data$Year>1996, pch=19, col="blue")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="CH"&total_cones_data$Year<1996, pch=19, col="red")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="CH"&total_cones_data$Year>1996, pch=19, col="red")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="LL", pch=19, col="grey")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="SU", pch=19, col="green")
+points(total_cones_data$total_cones~total_cones_data$Year, type="b", subset=total_cones_data$Grid=="JO", pch=19, col="orange")
+legend (1988, 2600, c("KL", "AG", "CH", "LL", "SU", "JO"), col=c("black", "blue", "red", "grey", "green", "orange"), pch=19, bty="n")
+```
+
+# Annual measures across all grids
+In many instances we are not interested in grid-specifc cone abundances but only in annual values.  Here I will compile the annual average cone count, cone index and total cones across all six grids (AG, CH, JO, KL, LL, SU).  Note that this is potentially problematic because as you can see from the figure of GridYear averages there is considereable variation in cone production among grids in some years (e.g. low cones on AG and CH in 2005).
+
+```{r}
+selected_grids <- c("AG", "CH", "JO", "KL", "LL", "SU")
+cone_counts<-tbl(con, "cones") %>%
+  filter(Grid %in% selected_grids, Year>=1988) %>%
+  collect() %>%
+  mutate(Year = as.numeric(Year), LocX = as.numeric(LocX), LocY = as.numeric(LocY), DBH = as.numeric(DBH), Per = as.numeric(Per), NumNew = as.numeric(NumNew)) %>% 
+  mutate(total_cones = 1.11568 * exp(0.1681 + 1.1891 * log(NumNew + 0.01)))
+
+yearly_cone_output <- group_by(cone_counts, Year) %>% 
+  summarize(num_trees = sum(!is.na(NumNew)),
+            cone_counts = mean(NumNew, na.rm = TRUE),
+            cone_index = mean(log(NumNew + 1), na.rm = TRUE),
+            total_cones = mean(total_cones, na.rm = TRUE))
+yearly_cone_output <- rbind(yearly_cone_output,
+                            list(1989L, 0, 0, 0, 0.005525156))
+
+yearly_cone_output <- yearly_cone_output %>% 
+  mutate(cone_index_t = ifelse(is.finite(cone_index), cone_index, NA)) %>% 
+  mutate(Year_tp1 = Year+1)
+
+yearly_cone_temp<-yearly_cone_output %>% 
+  select(Year, Year_tp1, cone_index_tm1=cone_index_t)
+  
+yearly_cone_output<-left_join(yearly_cone_output, yearly_cone_temp, by=c("Year" = "Year_tp1")) %>% 
+  select(Year, num_trees, cone_counts, cone_index_t, cone_index_tm1, total_cones)
+
+yearly_cone_output<-yearly_cone_output %>% 
+  mutate(mast=ifelse(Year %in% c(1993, 1998, 2005, 2010, 2014), "y", "n"))
+
+arrange(yearly_cone_output, Year) %>% 
+  kable(digits = 3)
+
+write.csv(yearly_cone_output, file = "yearly-all-cones.csv")
+```
+
+# Annual measures for KL and SU only
+We often are interested in only the long-term control grids in which case the average cone abundance on KL and SU is probably the best measure.
+
+```{r}
+cone_counts_klsu<-tbl(con, "cones") %>%
+  filter(Grid %in% c("SU", "KL"), Year>=1988, !is.na(NumNew)) %>%
+  collect() %>%
+  mutate(Year = as.numeric(Year), LocX = as.numeric(LocX), LocY = as.numeric(LocY), DBH = as.numeric(DBH), Per = as.numeric(Per), NumNew = as.numeric(NumNew)) %>% 
+  mutate(total_cones = 1.11568 * exp(0.1681 + 1.1891 * log(NumNew + 0.01)))
+
+yearly_klsu_cone_output <- group_by(cone_counts_klsu, Year) %>% 
+  summarize(num_trees = sum(!is.na(NumNew)),
+            cone_counts = mean(NumNew, na.rm = TRUE),
+            cone_index = mean(log(NumNew + 1), na.rm = TRUE),
+            total_cones = mean(total_cones, na.rm = TRUE))
+
+yearly_klsu_cone_output <- yearly_klsu_cone_output %>% 
+  mutate(cone_index_t = ifelse(is.finite(cone_index), cone_index, NA)) %>% 
+  mutate(Year_tp1 = Year+1)
+
+yearly_klsu_cone_temp<-yearly_klsu_cone_output %>% 
+  select(Year, Year_tp1, cone_index_tm1=cone_index_t)
+  
+yearly_klsu_cone_output<-left_join(yearly_klsu_cone_output, yearly_klsu_cone_temp, by=c("Year" = "Year_tp1")) %>% 
+  select(Year, num_trees, cone_counts, cone_index_t, cone_index_tm1, total_cones)
+
+yearly_klsu_cone_output<-yearly_klsu_cone_output %>% 
+  mutate(mast=ifelse(Year %in% c(1993, 1998, 2005, 2010, 2014), "y", "n"))
+
+arrange(yearly_klsu_cone_output, Year) %>% 
+  kable(digits = 3)
+
+write.csv(yearly_klsu_cone_output, file = "yearly-klsu-all-cones.csv")
+```
+
+# Plot for Presentations
+I often use the following plot for presentations.  I will display this plot in the PDF as well as exporting a PDF of the plot alone.
+```{r}
+library (plotrix)
+
+
+plot(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, type="n", xlab="Year", ylab="Total cones per tree", ylim=c(0, 1700), cex.lab=1.5, cex.axis=1.2)
+ablineclip(v=1993, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=1998, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2005, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2010, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2014, col="lightgrey", lwd=14, y1=0)
+abline(h=0, col="black")
+lines(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, type="l", col="black", lwd=1.8)
+points(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, pch=19, cex=1.5,  col="red")
+box(col="black")
+
+
+
+pdf(file="Cone_Abundance_Plot.pdf",width=7.5, height=5, family="Helvetica")
+par(mar=c(4, 5, 2, 2))
+plot(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, type="n", xlab="Year", ylab="Total cones per tree", ylim=c(0, 1700), cex.lab=1.5, cex.axis=1.2)
+ablineclip(v=1993, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=1998, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2005, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2010, col="lightgrey", lwd=14, y1=0)
+ablineclip(v=2014, col="lightgrey", lwd=14, y1=0)
+abline(h=0, col="black")
+lines(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, type="l", col="black", lwd=1.8)
+points(yearly_klsu_cone_output$total_cones~yearly_klsu_cone_output$Year, pch=19, cex=1.5,  col="red")
+box(col="black")
+dev.off()
+```
+
+
+# Taking Photographs
+Photographs need to be high resolution and clear in order to be able to count cones from them.  This means that photos should be taken from a location where the top of the tree is clearly visible and with the sun shining on that side of the tree.  Back-lit or poorly lit photos will be extremely difficult to count.
+Adjust the settings on the camera so that the file name is visible on the image once the picture is taken.  Write the file name in your data book on the cone count for trees with more than 100 cones visible from one side.
+
+Practice taking a few unofficial photos and try counting cones on them following the protocol below to get a sense of the appropriate settings for the clearest image. 
+Counting Cones from Digital Images
+ImageJ is probably the easiest program for counting cones from digital images.  The software can be downloaded from http://rsbweb.nih.gov/ij/.  Make sure that the “Cell Counter” plugin is installed.  If not, it can be obtained from http://rsb.info.nih.gov/ij/plugins/cell-counter.html.
+
+1.	Open the ImageJ software. 
+2.	Open the digital image (File>Open>) making sure you are opening the correct image (always check which folder the image is in, since photo names are not individually unique, e.g. CHP2 is a photo in both the Pre harvest folder and the Post harvest folder).
+3.	Open the “Cell Counter” plugin (Plugins>Analyze>Cell counter)
+4.	Click “Initialize” (you only need to do this once to get started on a photo, don’t click it again while counting cones in the same photo or it will reset everything).
+5.	Rotate the photo if necessary (Image>Rotate).
+6.	Some photos may have trees in the background, count only the tree in the center of the photo, but make a comment in the data file indicating there was more than 1 tree in the photo.
+7.	The photo should be zoomed in or out to get the appropriate magnification so that cones can be clearly seen (Image>Zoom>In).
+8.	Select counter “Type 1”.
+9.	Click once on each visible OLD OPENED CONE in the photo.  Each click will add one to the running tally of the total number of cones on the photo and will add a mark to the image so that you know the cone has been counted.
+10.	To delete an unwanted mark simply select the “Delete Mode” check box.  When selected, clicking a mark will delete it. To go back to counting cones unclick the “Delete mode” check box. Alternatively you can also click on the “Delete” button, but this will only delete the last marker that was added. 
+11.	Then select counter “Type 2”.
+12.	Click once on each visible NEW CONE in the photo (as above).
+13.	To move the photo around once it’s zoomed in to see other areas of the tree, click on the hand tool in the Image J toolbar. To go back to the cell counter click on the rectangle in the Image J toolbar.
+14.	When you have counted all of the cones on the image, record the total tally for old (Type 1) and new cones (Type 2) in the designated excel file along with the date and your initials (observer).
+15.	When you are done counting cones for the day, backup your excel file in the backup folder in the 2010 cone photos folder on the desktop. Save the excel file with the date in the file name, e.g. Ariel 2010 Cone picture counts Nov 1.docx.
+
+# Key References
